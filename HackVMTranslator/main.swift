@@ -7,8 +7,6 @@
 
 import Foundation
 
-print("Hello, World!")
-
 enum ArithmeticCommand: String {
     case add = "+"
     case sub = "-"
@@ -28,8 +26,8 @@ enum UnaryCommand: String {
 }
 
 enum StackCommand: String {
-    case pop = "pop"
-    case push = "push"
+    case pop
+    case push
 }
 
 enum DestinationSegment {
@@ -53,11 +51,58 @@ struct VMInstruction {
 
 class Tokenizer {
     private var assembly: [String] = []
-    private var staticPrefix: String = ""
-    private var staticIndex: Int = 0
+    private var staticPrefix = ""
+    private var staticIndex = 0
     private var arithmeticLabels: Set<ArithmeticCommand> = Set()
     private var comparisonLabels: Set<Comparator> = Set()
-    
+
+    private let STACK_PUSH_LABEL = "STACK_PUSH"
+    private let WRITE_BOOL_LABEL = "WRITE_BOOL"
+    private let WRITE_TRUE_LABEL = "WRITE_TRUE"
+
+    private var stackPushLabelGenerated = false
+    private var hasWrittenBoolLabel = false
+
+    private func performPop(from vmInstruction: VMInstruction) -> [String] {
+        var result: [String] = []
+        result.append(contentsOf:
+            convertPop(from: vmInstruction)
+        )
+        result.append(contentsOf:
+            writeToSegment(
+                dest: vmInstruction.dest!,
+                index: vmInstruction.index!
+            )
+        )
+        return result
+    }
+
+    private func performPush(from vmInstruction: VMInstruction) -> [String] {
+        var result: [String] = []
+        result.append(contentsOf:
+            convertPush(from: vmInstruction)
+        )
+        result.append(contentsOf:
+            readFromSegment(
+                dest: vmInstruction.dest!,
+                segmentIndex: vmInstruction.index!
+            )
+        )
+        return result
+    }
+
+    private func performStackOperation(vmInstruction: VMInstruction) -> [String] {
+        return [
+            convertPop(from: vmInstruction),
+            selectSegmentIndex(dest: .TEMP, index: 4),
+            ["M=D"],
+            convertPop(from: vmInstruction),
+            selectSegmentIndex(dest: .TEMP, index: 4),
+            convertOperation(from: vmInstruction),
+            convertPush(from: vmInstruction),
+        ].flatMap { $0 }
+    }
+
     private func convertPop(from vmInstruction: VMInstruction) -> [String] {
         var result: [String] = []
         if vmInstruction.stackCommand == .pop {
@@ -67,7 +112,7 @@ class Tokenizer {
         }
         return result
     }
-    
+
     private func convertPush(from vmInstruction: VMInstruction) -> [String] {
         var result: [String] = []
         if vmInstruction.stackCommand == .push {
@@ -77,18 +122,19 @@ class Tokenizer {
         }
         return result
     }
-    
-    private func convertBinaryArithmetic (symbol: ArithmeticCommand) -> [String]{
+
+    private func convertBinaryArithmetic(symbol: ArithmeticCommand) -> [String] {
         return [
-            "D=M\(symbol)D"
+            "D=M\(symbol)D",
         ]
     }
-    private func convertUnaryArithmetic (symbol: UnaryCommand) -> [String] {
+
+    private func convertUnaryArithmetic(symbol: UnaryCommand) -> [String] {
         return [
-            "D=\(symbol)D"
+            "D=\(symbol)D",
         ]
     }
-    
+
     private func getSegmentString(dest: DestinationSegment, constIndex: Int) -> String {
         switch dest {
             case .LCL:
@@ -104,12 +150,12 @@ class Tokenizer {
             case .CONST:
                 return "@\(constIndex)"
             case .STATIC:
-                return "@\(self.staticPrefix).\(self.staticIndex)"
+                return "@\(staticPrefix).\(staticIndex)"
         }
     }
+
     private func readFromSegment(dest: DestinationSegment, segmentIndex: Int) -> [String] {
         // The last instruction here should have set the D register to the value stored at the segment base + index
-        let seg = getSegmentString(dest: dest, constIndex: segmentIndex)
         var results: [String] = []
         let indexInstructions = selectSegmentIndex(dest: dest, index: segmentIndex)
         results.append(contentsOf: indexInstructions)
@@ -117,8 +163,9 @@ class Tokenizer {
         results.append("D=M")
         return results
     }
-    
-    private func selectSegmentIndex (dest: DestinationSegment, index: Int) -> [String] {
+
+    private func selectSegmentIndex(dest: DestinationSegment, index: Int) -> [String] {
+        // TODO: This isn't complete. I need to select the base address of the segment using the dest, based on the template instructions in vscode
         let seg = getSegmentString(dest: dest, constIndex: index)
         var results: [String] = []
         results.append("@\(index)")
@@ -126,7 +173,7 @@ class Tokenizer {
         results.append("A=D+A")
         return results
     }
-    
+
     private func writeToSegment(dest: DestinationSegment, index: Int) -> [String] {
         // The last instruction here should have set the D register to the value stored at the segment base + index
         let seg = getSegmentString(dest: dest, constIndex: index)
@@ -135,10 +182,8 @@ class Tokenizer {
         results.append("D=M")
         return results
     }
-    
-    private var stackPushLabelGenerated = false
-    private let STACK_PUSH_LABEL = "STACK_PUSH"
-    private func writeToStack () -> [String] {
+
+    private func writeToStack() -> [String] {
         /* Writes the value stored in the D register to the stack */
         if stackPushLabelGenerated {
             return [
@@ -155,160 +200,95 @@ class Tokenizer {
             ]
         }
     }
-    
-    private func performStackOperation (vmInstruction: VMInstruction) -> [String] {
-        return [
-            convertPop(from: vmInstruction),
-            selectSegmentIndex(dest: .TEMP, index: 4),
-            ["M=D"],
-            convertPop(from: vmInstruction),
-            selectSegmentIndex(dest: .TEMP, index: 4),
-            convertOperation(from: vmInstruction),
-            convertPush(from: vmInstruction) // TODO: Conver to accept string params like push local 5
-        ].flatMap({ $0 })
-    }
-    
-    private func generateArithmeticFunction (expression: ArithmeticCommand) -> [String] {
+
+    private func generateArithmeticFunction(expression: ArithmeticCommand) -> [String] {
         let labelName = "\(expression.rawValue)"
         if arithmeticLabels.contains(expression) {
             return [
                 "@\(labelName)",
-                "0;JMP"
+                "0;JMP",
             ]
         } else {
             return [
                 "(\(labelName)",
                 "D=M\(expression.rawValue)D",
-                
             ]
         }
     }
-    
-    
-    private let WRITE_BOOL_LABEL = "WRITE_BOOL"
-    private let WRITE_TRUE_LABEL = "WRITE_TRUE"
-    
-    private var hasWrittenBoolLabel = false
-    private func writeBool (jump: Comparator) -> [String] {
+
+    private func writeBool(jump: Comparator) -> [String] {
         var result: [String] = []
         if hasWrittenBoolLabel {
             // Jump to the writeBool label if it already exists
-            result.append(contentsOf: [
-                "@\(WRITE_BOOL_LABEL)",
-                "0;JMP"
-            ])
+            result.append(
+                contentsOf: [
+                    "@\(WRITE_BOOL_LABEL)",
+                    "0;JMP",
+                ]
+            )
         } else {
             result.append("(\(WRITE_BOOL_LABEL))")
             result.append(contentsOf: selectSegmentIndex(dest: .TEMP, index: 4))
             result.append(contentsOf: [
                 "@\(WRITE_TRUE_LABEL)",
-                ]
+            ]
             )
         }
-        
+
         // Handle jump
+        result.append(jump.rawValue)
+        return result.compactMap { $0 }
     }
-    
-    private func generateComparison (expression: Comparator) -> [String] {
+
+    private func generateComparison(expression: Comparator) -> [String] {
         var result: [String] = []
         result.append(contentsOf: selectSegmentIndex(dest: .TEMP, index: 3))
         result.append(contentsOf: writeBool(jump: expression))
         result.append(expression.rawValue)
+        return result.compactMap { $0 }
     }
-    
+
     private func convertOperation(from vmInstruction: VMInstruction) -> [String] {
-        
         if let binOp = vmInstruction.binaryOperator {
             return convertBinaryArithmetic(symbol: binOp)
         }
-        
+
         if let comparison = vmInstruction.comparator {
             return generateComparison(expression: comparison)
         }
-        
+
         if let unaryOperator = vmInstruction.unaryOperator {
             return convertUnaryArithmetic(symbol: unaryOperator)
         }
-        
-        return [] // Placeholder
-    }
-    
-    func translate (from vmInstruction: VMInstruction) {
-        self.segmentIndex = vmInstruction.index
-//        switch vmInstruction.command {
-//            case .pop:
-//                assembly.append(contentsOf: convertPop(from: vmInstruction))
-//            case .push:
-//                assembly.append(contentsOf: convertPush(from: vmInstruction))
-//            default:
-//                assembly.append(contentsOf: convertArithmetic(from: vmInstruction))
-//        }
-    }
-}
 
-struct Parser {
-    let binaryOperator: ArithmeticCommand?
-    let comparator: Comparator?
-    let unaryOperator: UnaryCommand?
-    let stackCommand: StackCommand?
-    
-    private var dest: DestinationSegment?
-    private var value: Int?
-    
+        return []
+    }
 
-    init(instruction: String) {
-        let instruction = splitInstruction(instruction: instruction)
-        // command = instruction.command
-    
-        dest = instruction.dest
-        value = instruction.index
-    }
-    
-    private func parseDestinationSegment (dest: String?) -> DestinationSegment? {
-        guard dest != nil else {
-            return nil
+    func translate(from vmInstruction: VMInstruction) {
+        if let pushOrPop = vmInstruction.stackCommand {
+            switch pushOrPop {
+                case .pop:
+                    assembly.append(contentsOf: performPop(from: vmInstruction))
+                case .push:
+                    assembly.append(contentsOf: performPush(from: vmInstruction))
+            }
         }
-        switch dest {
-            case "LCL":
-                return .LCL
-            case "THIS":
-                return .THIS
-            case "THAT":
-                return .THAT
-            case "CONST":
-                return .CONST
-            case "STATIC":
-                return .STATIC
-            case "ARGUMENT":
-                return .ARGUMENT
-            case "TEMP":
-                return .TEMP
-            default:
-                return nil
-        }
+        assembly.append(contentsOf: performStackOperation(vmInstruction: vmInstruction))
     }
-    
-    private func parseIndex (indexString: String?) -> Int? {
-        if let index = indexString {
-            return Int(index, radix: 10)
-        } else {
-            return nil
-        }
-    }
-    
-    private func splitInstruction(instruction: String) -> VMInstruction {
-        let split: [String] = instruction.components(separatedBy: " ")
-        
-        var dest: String? = split[1]
-        var index: Int? = parseIndex(indexString: split[2])
-        
-        return VMInstruction(
-            binaryOperator: ArithmeticCommand(rawValue: split[0]) ?? nil,
-            comparator: Comparator(rawValue: split[0]) ?? nil,
-            unaryOperator: UnaryCommand(rawValue: split[0]) ?? nil,
-            stackCommand: StackCommand(rawValue: split[0]) ?? nil,
-            dest: let dest =  ? parseDestinationSegment(dest: split[1]) : nil,
-            index:  ?? nil
-        )
+
+    func finish() -> [String] {
+        /* Once each line has been translated, write any symbols or loops that need to end the program */
+        var result: [String] = []
+        result.append(contentsOf: [
+            "@END",
+            "0;JMP",
+            "(END)",
+            "@END",
+            "0;JMP",
+            "(\(WRITE_TRUE_LABEL)",
+            "D=1",
+        ])
+        result.append(contentsOf: writeToStack())
+        return result.compactMap { $0 }
     }
 }
