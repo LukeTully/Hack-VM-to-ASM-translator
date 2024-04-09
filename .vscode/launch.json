@@ -1,0 +1,28 @@
+{
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "sourceLanguages": [
+        "swift"
+      ],
+      "args": [],
+      "cwd": "${workspaceFolder:VMTranslator}",
+      "name": "Debug hackvmtranslator",
+      "program": "${workspaceFolder:VMTranslator}/.build/debug/hackvmtranslator",
+      "preLaunchTask": "swift: Build Debug hackvmtranslator"
+    },
+    {
+      "type": "lldb",
+      "request": "launch",
+      "sourceLanguages": [
+        "swift"
+      ],
+      "args": [],
+      "cwd": "${workspaceFolder:VMTranslator}",
+      "name": "Release hackvmtranslator",
+      "program": "${workspaceFolder:VMTranslator}/.build/release/hackvmtranslator",
+      "preLaunchTask": "swift: Build Release hackvmtranslator"
+    }
+  ]
+}

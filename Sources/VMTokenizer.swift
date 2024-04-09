@@ -1,8 +1,8 @@
 //
-//  main.swift
+//  VMTokenizer.swift
 //  HackVMTranslator
 //
-//  Created by Luke Tully on 2024-03-25.
+//  Created by Luke Tully on 2024-04-08.
 //
 
 import Foundation
@@ -49,7 +49,7 @@ struct VMInstruction {
     let index: Int?
 }
 
-class Tokenizer {
+class VMTokenizer {
     private var assembly: [String] = []
     private var staticPrefix = ""
     private var staticIndex = 0
@@ -68,12 +68,17 @@ class Tokenizer {
         result.append(contentsOf:
             convertPop(from: vmInstruction)
         )
-        result.append(contentsOf:
-            writeToSegment(
-                dest: vmInstruction.dest!,
-                index: vmInstruction.index!
+        
+        if let d = vmInstruction.dest,
+            let index = vmInstruction.index {
+            result.append(contentsOf:
+                writeToSegment(
+                    dest: d,
+                    index: index
+                )
             )
-        )
+        }
+
         return result
     }
 
@@ -82,12 +87,17 @@ class Tokenizer {
         result.append(contentsOf:
             convertPush(from: vmInstruction)
         )
-        result.append(contentsOf:
-            readFromSegment(
-                dest: vmInstruction.dest!,
-                segmentIndex: vmInstruction.index!
+        
+        if let d = vmInstruction.dest,
+            let index = vmInstruction.index {
+            result.append(contentsOf:
+                readFromSegment(
+                    dest: d,
+                    segmentIndex: index
+                )
             )
-        )
+        }
+        
         return result
     }
 
@@ -279,6 +289,7 @@ class Tokenizer {
     func finish() -> [String] {
         /* Once each line has been translated, write any symbols or loops that need to end the program */
         var result: [String] = []
+        result.append(contentsOf: assembly)
         result.append(contentsOf: [
             "@END",
             "0;JMP",
