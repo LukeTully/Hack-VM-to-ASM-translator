@@ -55,6 +55,7 @@ enum DestinationSegment {
     case CONST
     case STATIC
     case ARGUMENT
+    case POINTER
     case TEMP
 }
 
@@ -84,10 +85,10 @@ class VMTokenizer {
 
     private func performPop(from vmInstruction: VMInstruction) -> [String] {
         var result: [String] = []
-        
+
         // Pop off the stack
         result.append(contentsOf: convertPop(from: vmInstruction))
-        
+
         // Store the stack value in a register
         result.append(
             contentsOf: [
@@ -95,16 +96,14 @@ class VMTokenizer {
                 "M=D",
             ]
         )
-        
-        
-        
+
         if let d = vmInstruction.dest,
-            let index = vmInstruction.index {
-            
+           let index = vmInstruction.index
+        {
             // Calculate the destination index
             result.append(contentsOf: selectSegmentIndex(dest: d, index: index))
             result.append("D=A") // The A register should point to dest offset
-            
+
             // Store the calculated dest in another register
             result.append(
                 contentsOf: [
@@ -112,7 +111,7 @@ class VMTokenizer {
                     "M=D",
                 ]
             )
-            
+
             // Re-read the previous stack value
             result.append(
                 contentsOf: [
@@ -120,10 +119,10 @@ class VMTokenizer {
                     "D=M",
                     "@R13",
                     "A=M",
-                    "M=D" // Store the previous stack value in the final destination
+                    "M=D", // Store the previous stack value in the final destination
                 ]
             )
-            
+
 //            result.append(contentsOf:
 //                writeToSegment(
 //                    dest: d,
@@ -137,9 +136,10 @@ class VMTokenizer {
 
     private func performPush(from vmInstruction: VMInstruction) -> [String] {
         var result: [String] = []
-        
+
         if let d = vmInstruction.dest,
-            let index = vmInstruction.index {
+           let index = vmInstruction.index
+        {
             result.append(contentsOf:
                 readFromSegment(
                     dest: d,
@@ -150,7 +150,7 @@ class VMTokenizer {
                 convertPush(from: vmInstruction)
             )
         }
-        
+
         return result
     }
 
@@ -168,11 +168,11 @@ class VMTokenizer {
 
     private func convertPop(from vmInstruction: VMInstruction) -> [String] {
         var result: [String] = []
-            result.append("@SP")
-            result.append("AM=M-1")
-            result.append("D=M")
+        result.append("@SP")
+        result.append("AM=M-1")
+        result.append("D=M")
 //            result.append("M=0")
-        
+
         return result
     }
 
@@ -183,7 +183,7 @@ class VMTokenizer {
         result.append("M=D") // D should be already set to a value
         result.append("@SP")
         result.append("M=M+1")
-        
+
         return result
     }
 
@@ -200,15 +200,23 @@ class VMTokenizer {
     }
 
     private func getSegmentString(dest: DestinationSegment, constIndex: Int) -> String {
+        let THIS_LABEL = "@THIS"
+        let THAT_LABEL = "@THAT"
+
         switch dest {
             case .LCL:
                 return "@LCL"
             case .THIS:
-                return "@THIS"
+                return THIS_LABEL
             case .THAT:
-                return "@THAT"
+                return THAT_LABEL
             case .ARGUMENT:
                 return "@ARG"
+            case .POINTER:
+                if constIndex == 1 {
+                    return THAT_LABEL
+                }
+                return THIS_LABEL // TODO: This should be one of many conditions that are checked earlier for validity
             case .TEMP:
                 return "@\(5 + constIndex)"
             case .CONST:
@@ -232,11 +240,13 @@ class VMTokenizer {
     private func selectSegmentIndex(dest: DestinationSegment, index: Int) -> [String] {
         var results: [String] = []
         results.append(getSegmentString(dest: dest, constIndex: index))
-        
-        if dest == .TEMP {
+
+        if dest == .TEMP ||
+            dest == .POINTER
+        {
             return results
         }
-        
+
         if dest != .CONST {
             results.append("D=M")
             results.append("@\(index)")
@@ -244,7 +254,7 @@ class VMTokenizer {
         } else {
             results.append("AD=A")
         }
-        
+
         return results
     }
 
@@ -351,14 +361,14 @@ class VMTokenizer {
         } else {
             translatedInstructionList.append(contentsOf: performStackOperation(vmInstruction: vmInstruction))
         }
-        
+
         // Append a comment that denotes the original VM command
         if translatedInstructionList.indices.contains(0) {
             if let og = vmInstruction.originalCommand {
                 translatedInstructionList[0].append(" // \(og)")
             }
         }
-        
+
         assembly.append(contentsOf: translatedInstructionList)
     }
 

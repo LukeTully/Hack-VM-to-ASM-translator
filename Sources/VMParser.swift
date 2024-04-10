@@ -13,12 +13,11 @@ class VMParser {
     private var unaryOperator: UnaryCommand?
     private var stackCommand: StackCommand?
     private var originalInstruction: String?
-    
+
     private var dest: DestinationSegment?
     private var value: Int?
 
     func getVMInstruction() -> VMInstruction {
-        
         return VMInstruction(
             binaryOperator: binaryOperator,
             comparator: comparator,
@@ -33,17 +32,16 @@ class VMParser {
     func parse(instruction: String) -> VMInstruction? {
         if !shouldSkip(instruction: instruction) {
             let split: [String] = instruction.components(separatedBy: " ")
-            
-            if split.count > 0 {
+
+            if !split.isEmpty {
                 let baseCommand: String = split[0]
                 binaryOperator = arithmeticCommandMap[baseCommand] ?? nil
                 comparator = comparatorCommandMap[baseCommand] ?? nil
                 unaryOperator = unaryCommandMap[baseCommand] ?? nil
                 stackCommand = StackCommand(rawValue: split[0]) ?? nil
-                
-                
+
                 originalInstruction = instruction
-                
+
                 if split.indices.contains(1) {
                     dest = parseDestinationSegment(d: split[1])
                 }
@@ -54,15 +52,13 @@ class VMParser {
 
             return getVMInstruction()
         }
-         
+
         return nil
     }
 
-    private func shouldSkip (instruction: String) -> Bool {
+    private func shouldSkip(instruction: String) -> Bool {
         /* Determine if the line should be skipped */
-
-
-
+        /* TODO: Place whitespace or comment skipping code here */
         return false
     }
 
@@ -83,6 +79,8 @@ class VMParser {
                 return .STATIC
             case "argument":
                 return .ARGUMENT
+            case "pointer":
+                return .POINTER
             case "temp":
                 return .TEMP
             default:
