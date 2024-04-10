@@ -9,7 +9,7 @@ import Foundation
 @main
 @available(macOS 12.0.0, *)
 struct Translator: AsyncParsableCommand {
-//    @Argument var filePath: String
+   @Argument var filePath: String
     
     static let configuration = CommandConfiguration(abstract: "Convert VM commands into Hack ASM")
     
@@ -17,7 +17,7 @@ struct Translator: AsyncParsableCommand {
         let vm = VMTranslator()
         let testFilePath = "/Users/luke/development/nand2tetris/projects/07/MemoryAccess/CustomTest/CustomTest2.vm"
         
-        let results = try? await vm.parseLinesWithPath(filePath: testFilePath)
+        let results = try? await vm.parseLinesWithPath(filePath: filePath)
         guard let validResults = results else {
             return
         }

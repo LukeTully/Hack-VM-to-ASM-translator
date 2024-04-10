@@ -14,16 +14,34 @@ enum ArithmeticCommand: String {
     case or = "|"
 }
 
+let arithmeticCommandMap: [String: ArithmeticCommand] = [
+    "add": .add,
+    "sub": .sub,
+    "and": .and,
+    "or": .or,
+]
+
 enum Comparator: String {
     case eq = "D-M;JEQ"
     case gt = "D-M;JGT"
     case lt = "D-M;JLT"
 }
 
+let comparatorCommandMap: [String: Comparator] = [
+    "eq": .eq,
+    "gt": .gt,
+    "lt": .lt,
+]
+
 enum UnaryCommand: String {
     case neg = "-"
     case not = "!"
 }
+
+let unaryCommandMap: [String: UnaryCommand] = [
+    "neg": .neg,
+    "not": .not,
+]
 
 enum StackCommand: String {
     case pop
@@ -47,6 +65,7 @@ struct VMInstruction {
     let stackCommand: StackCommand?
     let dest: DestinationSegment?
     let index: Int?
+    let originalCommand: String?
 }
 
 class VMTokenizer {
@@ -65,18 +84,52 @@ class VMTokenizer {
 
     private func performPop(from vmInstruction: VMInstruction) -> [String] {
         var result: [String] = []
-        result.append(contentsOf:
-            convertPop(from: vmInstruction)
+        
+        // Pop off the stack
+        result.append(contentsOf: convertPop(from: vmInstruction))
+        
+        // Store the stack value in a register
+        result.append(
+            contentsOf: [
+                "@R14",
+                "M=D",
+            ]
         )
+        
+        
         
         if let d = vmInstruction.dest,
             let index = vmInstruction.index {
-            result.append(contentsOf:
-                writeToSegment(
-                    dest: d,
-                    index: index
-                )
+            
+            // Calculate the destination index
+            result.append(contentsOf: selectSegmentIndex(dest: d, index: index))
+            result.append("D=A") // The A register should point to dest offset
+            
+            // Store the calculated dest in another register
+            result.append(
+                contentsOf: [
+                    "@R13",
+                    "M=D",
+                ]
             )
+            
+            // Re-read the previous stack value
+            result.append(
+                contentsOf: [
+                    "@R14",
+                    "D=M",
+                    "@R13",
+                    "A=M",
+                    "M=D" // Store the previous stack value in the final destination
+                ]
+            )
+            
+//            result.append(contentsOf:
+//                writeToSegment(
+//                    dest: d,
+//                    index: index
+//                )
+//            )
         }
 
         return result
@@ -84,9 +137,6 @@ class VMTokenizer {
 
     private func performPush(from vmInstruction: VMInstruction) -> [String] {
         var result: [String] = []
-        result.append(contentsOf:
-            convertPush(from: vmInstruction)
-        )
         
         if let d = vmInstruction.dest,
             let index = vmInstruction.index {
@@ -96,6 +146,9 @@ class VMTokenizer {
                     segmentIndex: index
                 )
             )
+            result.append(contentsOf:
+                convertPush(from: vmInstruction)
+            )
         }
         
         return result
@@ -104,10 +157,10 @@ class VMTokenizer {
     private func performStackOperation(vmInstruction: VMInstruction) -> [String] {
         return [
             convertPop(from: vmInstruction),
-            selectSegmentIndex(dest: .TEMP, index: 4),
+            ["@R15"],
             ["M=D"],
             convertPop(from: vmInstruction),
-            selectSegmentIndex(dest: .TEMP, index: 4),
+            ["@R15"],
             convertOperation(from: vmInstruction),
             convertPush(from: vmInstruction),
         ].flatMap { $0 }
@@ -115,33 +168,34 @@ class VMTokenizer {
 
     private func convertPop(from vmInstruction: VMInstruction) -> [String] {
         var result: [String] = []
-        if vmInstruction.stackCommand == .pop {
             result.append("@SP")
             result.append("AM=M-1")
             result.append("D=M")
-        }
+//            result.append("M=0")
+        
         return result
     }
 
     private func convertPush(from vmInstruction: VMInstruction) -> [String] {
         var result: [String] = []
-        if vmInstruction.stackCommand == .push {
-            result.append("@SP")
-            result.append("AM=M+1")
-            result.append("M=D") // D should be already set to a value
-        }
+        result.append("@SP")
+        result.append("A=M")
+        result.append("M=D") // D should be already set to a value
+        result.append("@SP")
+        result.append("M=M+1")
+        
         return result
     }
 
     private func convertBinaryArithmetic(symbol: ArithmeticCommand) -> [String] {
         return [
-            "D=M\(symbol)D",
+            "D=D\(symbol.rawValue)M",
         ]
     }
 
     private func convertUnaryArithmetic(symbol: UnaryCommand) -> [String] {
         return [
-            "D=\(symbol)D",
+            "D=\(symbol.rawValue)D",
         ]
     }
 
@@ -156,7 +210,7 @@ class VMTokenizer {
             case .ARGUMENT:
                 return "@ARG"
             case .TEMP:
-                return "@TEMP"
+                return "@\(5 + constIndex)"
             case .CONST:
                 return "@\(constIndex)"
             case .STATIC:
@@ -169,18 +223,28 @@ class VMTokenizer {
         var results: [String] = []
         let indexInstructions = selectSegmentIndex(dest: dest, index: segmentIndex)
         results.append(contentsOf: indexInstructions)
-        results.append("A=D+A")
-        results.append("D=M")
+        if dest != .CONST {
+            results.append("D=M")
+        }
         return results
     }
 
     private func selectSegmentIndex(dest: DestinationSegment, index: Int) -> [String] {
-        // TODO: This isn't complete. I need to select the base address of the segment using the dest, based on the template instructions in vscode
-        let seg = getSegmentString(dest: dest, constIndex: index)
         var results: [String] = []
-        results.append("@\(index)")
-        results.append("D=A")
-        results.append("A=D+A")
+        results.append(getSegmentString(dest: dest, constIndex: index))
+        
+        if dest == .TEMP {
+            return results
+        }
+        
+        if dest != .CONST {
+            results.append("D=M")
+            results.append("@\(index)")
+            results.append("A=D+A")
+        } else {
+            results.append("AD=A")
+        }
+        
         return results
     }
 
@@ -237,11 +301,12 @@ class VMTokenizer {
                 ]
             )
         } else {
-            result.append("(\(WRITE_BOOL_LABEL))")
-            result.append(contentsOf: selectSegmentIndex(dest: .TEMP, index: 4))
-            result.append(contentsOf: [
-                "@\(WRITE_TRUE_LABEL)",
-            ]
+            result.append(
+                contentsOf: [
+                    "(\(WRITE_BOOL_LABEL))",
+                    "@R15",
+                    "@\(WRITE_TRUE_LABEL)",
+                ]
             )
         }
 
@@ -252,7 +317,7 @@ class VMTokenizer {
 
     private func generateComparison(expression: Comparator) -> [String] {
         var result: [String] = []
-        result.append(contentsOf: selectSegmentIndex(dest: .TEMP, index: 3))
+        result.append("@R13")
         result.append(contentsOf: writeBool(jump: expression))
         result.append(expression.rawValue)
         return result.compactMap { $0 }
@@ -275,15 +340,26 @@ class VMTokenizer {
     }
 
     func translate(from vmInstruction: VMInstruction) {
+        var translatedInstructionList: [String] = []
         if let pushOrPop = vmInstruction.stackCommand {
             switch pushOrPop {
                 case .pop:
-                    assembly.append(contentsOf: performPop(from: vmInstruction))
+                    translatedInstructionList.append(contentsOf: performPop(from: vmInstruction))
                 case .push:
-                    assembly.append(contentsOf: performPush(from: vmInstruction))
+                    translatedInstructionList.append(contentsOf: performPush(from: vmInstruction))
+            }
+        } else {
+            translatedInstructionList.append(contentsOf: performStackOperation(vmInstruction: vmInstruction))
+        }
+        
+        // Append a comment that denotes the original VM command
+        if translatedInstructionList.indices.contains(0) {
+            if let og = vmInstruction.originalCommand {
+                translatedInstructionList[0].append(" // \(og)")
             }
         }
-        assembly.append(contentsOf: performStackOperation(vmInstruction: vmInstruction))
+        
+        assembly.append(contentsOf: translatedInstructionList)
     }
 
     func finish() -> [String] {
@@ -296,7 +372,7 @@ class VMTokenizer {
             "(END)",
             "@END",
             "0;JMP",
-            "(\(WRITE_TRUE_LABEL)",
+            "(\(WRITE_TRUE_LABEL))",
             "D=1",
         ])
         result.append(contentsOf: writeToStack())

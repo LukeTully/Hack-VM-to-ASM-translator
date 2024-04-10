@@ -12,7 +12,8 @@ class VMParser {
     private var comparator: Comparator?
     private var unaryOperator: UnaryCommand?
     private var stackCommand: StackCommand?
-
+    private var originalInstruction: String?
+    
     private var dest: DestinationSegment?
     private var value: Int?
 
@@ -24,20 +25,32 @@ class VMParser {
             unaryOperator: unaryOperator,
             stackCommand: stackCommand,
             dest: dest,
-            index: value
+            index: value,
+            originalCommand: originalInstruction
         )
     }
 
     func parse(instruction: String) -> VMInstruction? {
         if !shouldSkip(instruction: instruction) {
             let split: [String] = instruction.components(separatedBy: " ")
-
-            binaryOperator = ArithmeticCommand(rawValue: split[0]) ?? nil
-            comparator = Comparator(rawValue: split[0]) ?? nil
-            unaryOperator = UnaryCommand(rawValue: split[0]) ?? nil
-            stackCommand = StackCommand(rawValue: split[0]) ?? nil
-            dest = parseDestinationSegment(d: split[1])
-            value = parseIndex(indexString: split[2])
+            
+            if split.count > 0 {
+                let baseCommand: String = split[0]
+                binaryOperator = arithmeticCommandMap[baseCommand] ?? nil
+                comparator = comparatorCommandMap[baseCommand] ?? nil
+                unaryOperator = unaryCommandMap[baseCommand] ?? nil
+                stackCommand = StackCommand(rawValue: split[0]) ?? nil
+                
+                
+                originalInstruction = instruction
+                
+                if split.indices.contains(1) {
+                    dest = parseDestinationSegment(d: split[1])
+                }
+                if split.indices.contains(2) {
+                    value = parseIndex(indexString: split[2])
+                }
+            }
 
             return getVMInstruction()
         }
