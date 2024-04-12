@@ -7,56 +7,94 @@ import ArgumentParser
 import Foundation
 
 @main
-@available(macOS 12.0.0, *)
+@available(macOS 13.0.0, *)
 struct Translator: AsyncParsableCommand {
-    @Argument var filePath: String
-
+    @Argument var sourceFilePath: String = "/Users/luke/development/nand2tetris/projects/07/MemoryAccess/CustomTest/CustomTest2.vm"
+    @Argument var outputFilePath: String?
+    
     static let configuration = CommandConfiguration(abstract: "Convert VM commands into Hack ASM")
 
     mutating func run() async throws {
-        let vm = VMTranslator()
-        let testFilePath = "/Users/luke/development/nand2tetris/projects/07/MemoryAccess/CustomTest/CustomTest2.vm"
-
-        let results = try? await vm.parseLinesWithPath(filePath: filePath)
-        guard let validResults = results else {
-            return
+        
+        let vm = VMTranslator(fileToRead: sourceFilePath, fileToWrite: outputFilePath)
+        
+        do {
+            try await vm.parseLines()
         }
-        for result in validResults {
-            print(result)
+        catch {
+            print("\(error.localizedDescription)")
+        }
+    }
+}
+@available(macOS 13.0.0, *)
+struct VMTranslator {
+    let readable: URL
+    let writable: URL
+    
+    init(fileToRead: String, fileToWrite: String?) {
+        self.readable = URL(fileURLWithPath: fileToRead)
+        
+        if let f = fileToWrite {
+            self.writable = URL(fileURLWithPath: f)
+        } else {
+            /*
+                Create a new file based on the capitalized name of the source instruction file
+                ~/Documents/Example.vm -> ~/Documents/Example.asm
+             */
+            let filename = extractFileNameFromURL(path: self.readable)
+            let pathToContainingDirectory = self.readable.deletingLastPathComponent()
+            let finalURL = pathToContainingDirectory.appending(component: "\(filename).asm")
+            self.writable = finalURL
+        }
+    }
+    
+    func parseLines() async throws {
+        var lineCount = 0
+        
+        let tokenizer = VMTokenizer(staticPrefix: extractFileNameFromURL(path: writable))
+        let parser = VMParser()
+        
+        // Write some empty data to overwrite or create the destination file
+        try "".write(to: self.writable, atomically: true, encoding: .utf8)
+        
+        if let fileForWriting = FileHandle(forWritingAtPath: self.writable.path) {
+            defer {
+                fileForWriting.closeFile()
+            }
+            do {
+                // Read each line of the data as it becomes available.
+                for try await line in readable.lines {
+                    lineCount += 1
+                    
+                    if let parsedLine = parser.parse(instruction: line) {
+                        writeLines(instructions: tokenizer.translate(from: parsedLine), fileHandle: fileForWriting)
+                    } else {
+                        print("found nil \(line)")
+                        continue
+                    }
+                }
+                return writeLines(
+                    instructions: tokenizer.finish(),
+                    fileHandle: fileForWriting
+                )
+            } catch {
+                print("Error: \(error)")
+            }
+        }
+    }
+    
+    private func writeLines (instructions: [String], fileHandle: FileHandle) {
+        for line in instructions {
+            fileHandle.seekToEndOfFile()
+            if let data = "\(line)\n".data(using: .utf8) {
+                fileHandle.write(data)
+            }
         }
     }
 }
 
-struct VMTranslator {
-    @available(macOS 12.0.0, *)
-    func parseLinesWithPath(filePath: String) async throws -> [String] {
-        let url = URL(fileURLWithPath: filePath)
-
-        var lineCount = 0
-
-        let tokenizer = VMTokenizer()
-        let parser = VMParser()
-
-        do {
-            // Read each line of the data as it becomes available.
-            for try await line in url.lines {
-                lineCount += 1
-
-                if let parsedLine = parser.parse(instruction: line) {
-                    tokenizer.translate(from: parsedLine)
-                } else {
-                    print("found nil \(line)")
-                    continue
-                }
-                // print("\(lineCount): \(line)")
-            }
-            return tokenizer.finish()
-        } catch {
-            print("Error: \(error)")
-        }
-
-        return []
-    }
+func extractFileNameFromURL (path: URL) -> String {
+    return path.deletingPathExtension().lastPathComponent
 }
 
 struct TestTranslator {}

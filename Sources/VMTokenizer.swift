@@ -70,9 +70,7 @@ struct VMInstruction {
 }
 
 class VMTokenizer {
-    private var assembly: [String] = []
-    private var staticPrefix = ""
-    private var staticIndex = 0
+    let staticPrefix: String
     private var arithmeticLabels: Set<ArithmeticCommand> = Set()
     private var comparisonLabels: Set<Comparator> = Set()
 
@@ -83,6 +81,10 @@ class VMTokenizer {
     private var stackPushLabelGenerated = false
     private var hasWrittenBoolLabel = false
 
+    init(staticPrefix: String) {
+        self.staticPrefix = staticPrefix
+    }
+    
     private func performPop(from vmInstruction: VMInstruction) -> [String] {
         var result: [String] = []
 
@@ -222,7 +224,7 @@ class VMTokenizer {
             case .CONST:
                 return "@\(constIndex)"
             case .STATIC:
-                return "@\(staticPrefix).\(staticIndex)"
+                return "@\(staticPrefix).\(constIndex)"
         }
     }
 
@@ -242,7 +244,8 @@ class VMTokenizer {
         results.append(getSegmentString(dest: dest, constIndex: index))
 
         if dest == .TEMP ||
-            dest == .POINTER
+            dest == .POINTER ||
+            dest == .STATIC
         {
             return results
         }
@@ -349,7 +352,7 @@ class VMTokenizer {
         return []
     }
 
-    func translate(from vmInstruction: VMInstruction) {
+    func translate(from vmInstruction: VMInstruction) -> [String] {
         var translatedInstructionList: [String] = []
         if let pushOrPop = vmInstruction.stackCommand {
             switch pushOrPop {
@@ -369,13 +372,12 @@ class VMTokenizer {
             }
         }
 
-        assembly.append(contentsOf: translatedInstructionList)
+        return translatedInstructionList
     }
 
     func finish() -> [String] {
         /* Once each line has been translated, write any symbols or loops that need to end the program */
         var result: [String] = []
-        result.append(contentsOf: assembly)
         result.append(contentsOf: [
             "@END",
             "0;JMP",
