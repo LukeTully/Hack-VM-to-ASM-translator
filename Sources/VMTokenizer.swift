@@ -22,15 +22,25 @@ let arithmeticCommandMap: [String: ArithmeticCommand] = [
 ]
 
 enum Comparator: String {
-    case eq = "D-M;JEQ"
-    case gt = "D-M;JGT"
-    case lt = "D-M;JLT"
+    case eq = "D;JEQ"
+    case gt = "D;JGT"
+    case lt = "D;JLT"
 }
 
 let comparatorCommandMap: [String: Comparator] = [
     "eq": .eq,
     "gt": .gt,
     "lt": .lt,
+]
+struct ComparisonJumpCommand {
+    var positiveJumpCondition: String
+    var negativeJumpCondition: String
+}
+
+let comparisonMap: [Comparator: ComparisonJumpCommand] = [
+    .eq: ComparisonJumpCommand(positiveJumpCondition: "D;JEQ", negativeJumpCondition: "D;JNE"),
+    .lt: ComparisonJumpCommand(positiveJumpCondition: "D;JLT", negativeJumpCondition: "D;JGE"),
+    .gt: ComparisonJumpCommand(positiveJumpCondition: "D;JGT", negativeJumpCondition: "D;JLE"),
 ]
 
 enum UnaryCommand: String {
@@ -71,6 +81,7 @@ struct VMInstruction {
 
 class VMTokenizer {
     let staticPrefix: String
+    var comparisonLabelIndex: Int = 0
     private var arithmeticLabels: Set<ArithmeticCommand> = Set()
     private var comparisonLabels: Set<Comparator> = Set()
 
@@ -157,15 +168,19 @@ class VMTokenizer {
     }
 
     private func performStackOperation(vmInstruction: VMInstruction) -> [String] {
-        return [
-            convertPop(from: vmInstruction),
-            ["@R15"],
-            ["M=D"],
-            convertPop(from: vmInstruction),
-            ["@R15"],
-            convertOperation(from: vmInstruction),
-            convertPush(from: vmInstruction),
-        ].flatMap { $0 }
+        if let binOp = vmInstruction.binaryOperator {
+            return convertBinaryArithmetic(symbol: binOp)
+        }
+
+        if let comparison = vmInstruction.comparator {
+            return generateComparison(expression: comparisonMap[comparison]!)
+        }
+
+        if let unaryOperator = vmInstruction.unaryOperator {
+            return convertUnaryArithmetic(symbol: unaryOperator)
+        }
+        
+        return []
     }
 
     private func convertPop(from vmInstruction: VMInstruction) -> [String] {
@@ -191,13 +206,31 @@ class VMTokenizer {
 
     private func convertBinaryArithmetic(symbol: ArithmeticCommand) -> [String] {
         return [
+            "@SP", // Pop off the stack
+            "AM=M-1",
+            "D=M",
+            "@R15", // Store the value in R15
+            "M=D",
+            "@SP", // Pop another
+            "AM=M-1",
+            "D=M",
+            "@R15",
             "D=D\(symbol.rawValue)M",
+            "@SP",
+            "A=M", // Navigate back to stack top
+            "M=D", // Store the binary arithmetic result
+            "@SP",
+            "M=M+1", // Increment stack pointer once more
         ]
     }
 
     private func convertUnaryArithmetic(symbol: UnaryCommand) -> [String] {
         return [
-            "D=\(symbol.rawValue)D",
+            "@SP", // Decrement stack by 1
+            "AM=M-1",
+            "M=\(symbol.rawValue)M", // Replace top of stack with unaried value
+            "@SP", // Re-increment stack pointer
+            "M=M+1",
         ]
     }
 
@@ -328,29 +361,45 @@ class VMTokenizer {
         return result.compactMap { $0 }
     }
 
-    private func generateComparison(expression: Comparator) -> [String] {
-        var result: [String] = []
-        result.append("@R13")
-        result.append(contentsOf: writeBool(jump: expression))
-        result.append(expression.rawValue)
-        return result.compactMap { $0 }
+    private func generateComparison(expression: ComparisonJumpCommand) -> [String] {
+        var results: [String] = [
+            [
+                "@SP", // Pop off the stack
+                "AM=M-1",
+                "D=M",
+                "@R15",
+                "M=D",
+                "@SP",
+                "AM=M-1",
+                "D=M",
+                "@R15",
+                "D=D-M", // Compares lower stack item to higher stack item
+                "@PUSH_TRUE_\(comparisonLabelIndex)",
+                expression.positiveJumpCondition,
+                "@PUSH_FALSE_\(comparisonLabelIndex)",
+                expression.negativeJumpCondition,
+                "(PUSH_TRUE_\(comparisonLabelIndex))",
+                "@SP",
+                "A=M",
+                "M=-1",
+                "@SP",
+                "M=M+1",
+                "@JUMP_BACK_\(comparisonLabelIndex)",
+                "0;JEQ",
+                "(PUSH_FALSE_\(comparisonLabelIndex))",
+                "@SP",
+                "A=M",
+                "M=0",
+                "@SP",
+                "M=M+1",
+                "(JUMP_BACK_\(comparisonLabelIndex))",
+            ]
+        ].flatMap { $0 }
+        
+        comparisonLabelIndex += 1
+        return results
     }
 
-    private func convertOperation(from vmInstruction: VMInstruction) -> [String] {
-        if let binOp = vmInstruction.binaryOperator {
-            return convertBinaryArithmetic(symbol: binOp)
-        }
-
-        if let comparison = vmInstruction.comparator {
-            return generateComparison(expression: comparison)
-        }
-
-        if let unaryOperator = vmInstruction.unaryOperator {
-            return convertUnaryArithmetic(symbol: unaryOperator)
-        }
-
-        return []
-    }
 
     func translate(from vmInstruction: VMInstruction) -> [String] {
         var translatedInstructionList: [String] = []
