@@ -21,6 +21,16 @@ let arithmeticCommandMap: [String: ArithmeticCommand] = [
     "or": .or,
 ]
 
+struct FunctionDefinition: Hashable {
+    var labelName: String
+    var nLocalVars: Int
+}
+
+struct CallSignature: Hashable {
+    var labelName: String
+    var nArgs: Int
+}
+
 enum Comparator: String {
     case eq = "D;JEQ"
     case gt = "D;JGT"
@@ -53,6 +63,15 @@ let unaryCommandMap: [String: UnaryCommand] = [
     "not": .not,
 ]
 
+enum ControlFlowCommand: String {
+    case ifGoto = "if-goto"
+    case goto
+    case functionDef = "function"
+    case callFunction = "call"
+    case functionReturn = "return"
+    case putLabel = "label"
+}
+
 enum StackCommand: String {
     case pop
     case push
@@ -69,7 +88,7 @@ enum DestinationSegment {
     case TEMP
 }
 
-struct VMInstruction {
+struct VMInstruction: Hashable {
     let binaryOperator: ArithmeticCommand?
     let comparator: Comparator?
     let unaryOperator: UnaryCommand?
@@ -77,11 +96,19 @@ struct VMInstruction {
     let dest: DestinationSegment?
     let index: Int?
     let originalCommand: String?
+    let controlFlowCommand: ControlFlowCommand?
+    let conditionalJumpLabel: String?
+    let unconditionalJumpLabel: String?
+    let callFunction: CallSignature?
+    let isReturnStatement: Bool?
+    let putLabelValue: String?
+    let functionDef: FunctionDefinition?
 }
 
 class VMTokenizer {
     let staticPrefix: String
-    var comparisonLabelIndex: Int = 0
+    var comparisonLabelIndex = 0
+
     private var arithmeticLabels: Set<ArithmeticCommand> = Set()
     private var comparisonLabels: Set<Comparator> = Set()
 
@@ -92,10 +119,178 @@ class VMTokenizer {
     private var stackPushLabelGenerated = false
     private var hasWrittenBoolLabel = false
 
+    private var functionReturnIndex: [String: Int] = [:]
+
+    private let STORED_FRAME_LABELS = [
+        "LCL",
+        "ARG",
+        "THIS",
+        "THAT",
+    ]
+
     init(staticPrefix: String) {
         self.staticPrefix = staticPrefix
     }
-    
+
+    func bootstrapVMTranslator() -> [String] {
+        let segments = [
+            "SP": "256",
+            "LCL": "256",
+            "ARG": "300",
+            "THIS": "3000",
+            "THAT": "4000",
+        ]
+
+        return segments.flatMap { segmentName, initialPointerVal in
+            [
+                "@\(segmentName)",
+                "M=\(initialPointerVal)",
+            ]
+        }
+    }
+
+    private func writeCall(
+        calleeName: String,
+        calleeArgs: Int
+    ) -> [String] {
+        var returnIndex = 0
+        if let existingReturnIndex = functionReturnIndex[calleeName] {
+            returnIndex = existingReturnIndex + 1
+        }
+
+        functionReturnIndex.updateValue(returnIndex, forKey: calleeName)
+
+        let returnSymbol = "\(staticPrefix).\(calleeName)$ret.\(returnIndex)"
+
+        // TODO: Capitalize staticPrefix at a higher level
+        let calleeNamePrefixed = "\(staticPrefix.capitalized).\(calleeName)"
+        var storeFrameInstructions = storeFrame(nArgs: calleeArgs)
+        storeFrameInstructions.append(
+            contentsOf: [
+                "@\(returnSymbol)",
+                "D=A",
+                "@SP",
+                "A=M",
+                "M=D",
+                "@SP",
+                "M=M+1",
+                "@\(calleeNamePrefixed)",
+                "0;JMP",
+                "(\(returnSymbol))",
+            ]
+        )
+        return storeFrameInstructions
+    }
+
+    private func storeFrame(nArgs: Int) -> [String] {
+        return STORED_FRAME_LABELS.flatMap {
+            [
+                "@\($0) // Storing Frame", // Select the segment pointer (LCL, ARG, THIS, THAT)
+                "D=M", // Store the selected pointer in D
+                "@SP", // Select the stack pointer
+                "A=M", // Navigate to the stack pointer's address
+                "M=D", // Push the selected segment pointer onto the stack
+                "@SP",  // Reselect the stack pointer
+                "MD=M+1", // Increment the stack pointer
+                "@\(nArgs)", // Reposition ARG in preparation for calling the function
+                "D=D-A",
+                "@ARG",
+                "M=D // End Storing Frame",
+            ]
+        }
+    }
+
+    private func writeFunctionDef(
+        symbolName: String,
+        locals: Int
+    ) -> [String] {
+        var result = [
+            "// Start Function \(symbolName) \n",
+            "(\(symbolName))",
+        ]
+        if locals > 0 {
+            for i in 0 ... locals {
+                result.append(
+                    contentsOf: [
+                        "@\(i - 1) // Init local \(i)",
+                        "D=A",
+                        "@LCL",
+                        "A=M+D",
+                        "M=0 // End Init local \(i)",
+                    ]
+                )
+            }
+        }
+
+        result.append(contentsOf: [
+            "D=A+1", // Should be one past the last local initialized
+            "@SP",
+            "M=D",
+            "// End Function \(symbolName)\n",
+        ])
+        return result
+    }
+
+    private func restoreFrame() -> [String] {
+        /* Happens during the return process, and is part of the final stage of a function's executution */
+        var result: [String] = [
+            "@SP",
+            "A=M-1",
+            "D=M",
+            "@ARG",
+            "A=M // Swapping return value with Arg 0",
+            "M=D",
+            "@LCL",
+            "D=M", // The last pointer in the frame will be stored 1 prior in the global stack to the LCL pointer of the callee
+            "@R14", // Select a general purpose register that will act as a temporary location for the LCL location in RAM
+            "M=D", // Store the location of the LCL segment
+            "@ARG",
+            "D=M",
+            "@SP",
+            "M=D+1",
+        ]
+
+        /* Unwind the caller's stack frame */
+        result.append(
+            contentsOf: STORED_FRAME_LABELS.reversed().flatMap {
+                [
+                    "@R14",
+                    "AM=M-1", // Start decrementing from the last LCL that was stored in R14
+                    "D=M", // Retrive the frame element at this position
+                    "@\($0)",
+                    "M=D",
+                ]
+            }
+        )
+
+        result.append(
+            contentsOf: [
+                "@R14",
+                "AM=M-1",
+                "0;JMP",
+            ]
+        )
+
+        return result
+    }
+
+    private func writeConditionalGoto(symbolName: String) -> [String] {
+        return [
+            "@SP // Start Condition GOTO for \(symbolName)", // Pop the top off the stack
+            "AM=M-1",
+            "D=M",
+            "@\(symbolName)",
+            "D;JNE",
+        ]
+    }
+
+    private func writeGoto(symbolName: String) -> [String] {
+        return [
+            "@\(symbolName)",
+            "0;JMP",
+        ]
+    }
+
     private func performPop(from vmInstruction: VMInstruction) -> [String] {
         var result: [String] = []
 
@@ -114,57 +309,48 @@ class VMTokenizer {
            let index = vmInstruction.index
         {
             // Calculate the destination index
-            result.append(contentsOf: selectSegmentIndex(dest: d, index: index))
-            result.append("D=A") // The A register should point to dest offset
-
+            var segmentOffsetInstructions = selectSegmentIndex(
+                dest: d,
+                index: index
+            )
+            
             // Store the calculated dest in another register
-            result.append(
+            segmentOffsetInstructions.append(
                 contentsOf: [
+                    "D=A",
                     "@R13",
                     "M=D",
-                ]
-            )
-
-            // Re-read the previous stack value
-            result.append(
-                contentsOf: [
-                    "@R14",
+                    "@R14", // Re-read the previous stack value
                     "D=M",
                     "@R13",
                     "A=M",
                     "M=D", // Store the previous stack value in the final destination
                 ]
             )
-
-//            result.append(contentsOf:
-//                writeToSegment(
-//                    dest: d,
-//                    index: index
-//                )
-//            )
         }
 
         return result
     }
 
     private func performPush(from vmInstruction: VMInstruction) -> [String] {
-        var result: [String] = []
+        var result: [[String]] = []
 
         if let d = vmInstruction.dest,
            let index = vmInstruction.index
         {
-            result.append(contentsOf:
-                readFromSegment(
-                    dest: d,
-                    segmentIndex: index
-                )
-            )
-            result.append(contentsOf:
-                convertPush(from: vmInstruction)
+            result.append(
+                contentsOf:
+                [
+                    readFromSegment(
+                        dest: d,
+                        segmentIndex: index
+                    ),
+                    convertPush(from: vmInstruction),
+                ]
             )
         }
 
-        return result
+        return result.flatMap { $0 }
     }
 
     private func performStackOperation(vmInstruction: VMInstruction) -> [String] {
@@ -179,7 +365,7 @@ class VMTokenizer {
         if let unaryOperator = vmInstruction.unaryOperator {
             return convertUnaryArithmetic(symbol: unaryOperator)
         }
-        
+
         return []
     }
 
@@ -188,20 +374,18 @@ class VMTokenizer {
         result.append("@SP")
         result.append("AM=M-1")
         result.append("D=M")
-//            result.append("M=0")
 
         return result
     }
 
     private func convertPush(from vmInstruction: VMInstruction) -> [String] {
-        var result: [String] = []
-        result.append("@SP")
-        result.append("A=M")
-        result.append("M=D") // D should be already set to a value
-        result.append("@SP")
-        result.append("M=M+1")
-
-        return result
+        return [
+            "@SP",
+            "A=M",
+            "M=D", // D should be already set to a value
+            "@SP",
+            "M=M+1",
+        ]
     }
 
     private func convertBinaryArithmetic(symbol: ArithmeticCommand) -> [String] {
@@ -234,7 +418,10 @@ class VMTokenizer {
         ]
     }
 
-    private func getSegmentString(dest: DestinationSegment, constIndex: Int) -> String {
+    private func getSegmentString(
+        dest: DestinationSegment,
+        constIndex: Int
+    ) -> String {
         let THIS_LABEL = "@THIS"
         let THAT_LABEL = "@THAT"
 
@@ -261,21 +448,25 @@ class VMTokenizer {
         }
     }
 
-    private func readFromSegment(dest: DestinationSegment, segmentIndex: Int) -> [String] {
+    private func readFromSegment(
+        dest: DestinationSegment,
+        segmentIndex: Int
+    ) -> [String] {
         // The last instruction here should have set the D register to the value stored at the segment base + index
-        var results: [String] = []
-        let indexInstructions = selectSegmentIndex(dest: dest, index: segmentIndex)
-        results.append(contentsOf: indexInstructions)
+        var results: [String] = selectSegmentIndex(dest: dest, index: segmentIndex)
         if dest != .CONST {
             results.append("D=M")
         }
         return results
     }
 
-    private func selectSegmentIndex(dest: DestinationSegment, index: Int) -> [String] {
-        var results: [String] = []
-        results.append(getSegmentString(dest: dest, constIndex: index))
-
+    private func selectSegmentIndex(
+        dest: DestinationSegment,
+        index: Int
+    ) -> [String] {
+        var results: [String] = [
+            getSegmentString(dest: dest, constIndex: index)
+        ]
         if dest == .TEMP ||
             dest == .POINTER ||
             dest == .STATIC
@@ -284,23 +475,23 @@ class VMTokenizer {
         }
 
         if dest != .CONST {
-            results.append("D=M")
-            results.append("@\(index)")
-            results.append("A=D+A")
+            results.append(
+                contentsOf: [
+                    "D=M",
+                    "@\(index)",
+                    "A=D+A",
+                ]
+            )
         } else {
             results.append("AD=A")
         }
-
         return results
     }
 
     private func writeToSegment(dest: DestinationSegment, index: Int) -> [String] {
-        // The last instruction here should have set the D register to the value stored at the segment base + index
-        let seg = getSegmentString(dest: dest, constIndex: index)
-        var results: [String] = []
-        results.append(contentsOf: selectSegmentIndex(dest: dest, index: index))
-        results.append("D=M")
-        return results
+        var segmentInstructions = selectSegmentIndex(dest: dest, index: index)
+        segmentInstructions.append("D=M")
+        return segmentInstructions
     }
 
     private func writeToStack() -> [String] {
@@ -393,13 +584,12 @@ class VMTokenizer {
                 "@SP",
                 "M=M+1",
                 "(JUMP_BACK_\(comparisonLabelIndex))",
-            ]
+            ],
         ].flatMap { $0 }
-        
+
         comparisonLabelIndex += 1
         return results
     }
-
 
     func translate(from vmInstruction: VMInstruction) -> [String] {
         var translatedInstructionList: [String] = []
@@ -409,6 +599,45 @@ class VMTokenizer {
                     translatedInstructionList.append(contentsOf: performPop(from: vmInstruction))
                 case .push:
                     translatedInstructionList.append(contentsOf: performPush(from: vmInstruction))
+            }
+        } else if let controlFlowCommand = vmInstruction.controlFlowCommand {
+            switch controlFlowCommand {
+                case .callFunction:
+                    if let validCallSig = vmInstruction.callFunction {
+                        translatedInstructionList.append(
+                            contentsOf: writeCall(
+                                calleeName: validCallSig.labelName,
+                                calleeArgs: Int(validCallSig.nArgs)
+                            )
+                        )
+                    }
+                case .functionDef:
+                    if let validFuncDef = vmInstruction.functionDef {
+                        translatedInstructionList.append(
+                            contentsOf: writeFunctionDef(
+                                symbolName: validFuncDef.labelName,
+                                locals: validFuncDef.nLocalVars
+                            )
+                        )
+                    }
+                case .functionReturn:
+                    if let isReturnStatement = vmInstruction.isReturnStatement {
+                        translatedInstructionList.append(contentsOf: restoreFrame())
+                    }
+                case .goto:
+                    if let gotoStatement = vmInstruction.unconditionalJumpLabel {
+                        translatedInstructionList.append(contentsOf: writeGoto(symbolName: gotoStatement))
+                    }
+                case .ifGoto:
+                    if let conditionalJumpLabel = vmInstruction.conditionalJumpLabel {
+                        translatedInstructionList.append(contentsOf: writeConditionalGoto(symbolName: conditionalJumpLabel))
+                    }
+                case .putLabel:
+                    if let putLabelValue = vmInstruction.putLabelValue {
+                        translatedInstructionList.append(
+                            "(\(putLabelValue))"
+                        )
+                    }
             }
         } else {
             translatedInstructionList.append(contentsOf: performStackOperation(vmInstruction: vmInstruction))
@@ -424,9 +653,10 @@ class VMTokenizer {
         return translatedInstructionList
     }
 
-    func finish() -> [String] {
+    func finish(remainingInstructions: [String]? = []) -> [String] {
         /* Once each line has been translated, write any symbols or loops that need to end the program */
-        var result: [String] = []
+        var result: [String] = remainingInstructions ?? []
+
         result.append(contentsOf: [
             "@END",
             "0;JMP",

@@ -13,6 +13,13 @@ class VMParser {
     private var unaryOperator: UnaryCommand?
     private var stackCommand: StackCommand?
     private var originalInstruction: String?
+    private var controlFlowCommand: ControlFlowCommand?
+    private var functionDef: FunctionDefinition?
+    private var conditionalJumpLabel: String?
+    private var unconditionalJumpLabel: String?
+    private var callFunction: CallSignature?
+    private var isReturnStatement: Bool?
+    private var putLabelValue: String?
 
     private var dest: DestinationSegment?
     private var value: Int?
@@ -25,28 +32,59 @@ class VMParser {
             stackCommand: stackCommand,
             dest: dest,
             index: value,
-            originalCommand: originalInstruction
+            originalCommand: originalInstruction,
+            controlFlowCommand: controlFlowCommand,
+            conditionalJumpLabel: conditionalJumpLabel,
+            unconditionalJumpLabel: unconditionalJumpLabel,
+            callFunction: callFunction,
+            isReturnStatement: isReturnStatement,
+            putLabelValue: putLabelValue,
+            functionDef: functionDef
         )
     }
 
     func parse(instruction: String) -> VMInstruction? {
-        if !shouldSkip(instruction: instruction) {
+        if !shouldSkip(instruction: instruction.trimmingCharacters(in: .whitespacesAndNewlines)) {
             let split: [String] = instruction.components(separatedBy: " ")
 
             if !split.isEmpty {
-                let baseCommand: String = split[0]
+                let baseCommand: String = split[0].trimmingCharacters(in: .whitespacesAndNewlines)
+
+                // TODO: This pattern is really clumsy
+
                 binaryOperator = arithmeticCommandMap[baseCommand] ?? nil
                 comparator = comparatorCommandMap[baseCommand] ?? nil
                 unaryOperator = unaryCommandMap[baseCommand] ?? nil
-                stackCommand = StackCommand(rawValue: split[0]) ?? nil
-
+                stackCommand = StackCommand(rawValue: baseCommand) ?? nil
+                controlFlowCommand = ControlFlowCommand(rawValue: baseCommand) ?? nil   // controlFlowMap[baseCommand] ?? nil
                 originalInstruction = instruction
 
-                if split.indices.contains(1) {
-                    dest = parseDestinationSegment(d: split[1])
-                }
-                if split.indices.contains(2) {
-                    value = parseIndex(indexString: split[2])
+                let second = split.indices.contains(1) ? split[1].trimmingCharacters(in: .whitespacesAndNewlines) : nil
+                let third = split.indices.contains(2) ? split[2].trimmingCharacters(in: .whitespacesAndNewlines) : nil
+                if let validControlFlowCommand = controlFlowCommand {
+                    switch validControlFlowCommand {
+                        case .functionReturn:
+                            isReturnStatement = true
+                        case .ifGoto:
+                            conditionalJumpLabel = second
+                        case .goto:
+                            unconditionalJumpLabel = second
+                        case .functionDef:
+                            functionDef = FunctionDefinition(
+                                labelName: second!,
+                                nLocalVars: Int(third ?? "", radix: 10) ?? 0
+                            )
+                        case .callFunction:
+                            callFunction = CallSignature(
+                                labelName: second!,
+                                nArgs: Int(third ?? "0", radix: 10) ?? 0
+                            )
+                        case .putLabel:
+                            putLabelValue = second
+                    }
+                } else {
+                    dest = parseDestinationSegment(d: second)
+                    value = parseIndex(indexString: third)
                 }
             }
 
@@ -58,7 +96,9 @@ class VMParser {
 
     private func shouldSkip(instruction: String) -> Bool {
         /* Determine if the line should be skipped */
-        /* TODO: Place whitespace or comment skipping code here */
+        if instruction.hasPrefix("//") {
+            return true
+        }
         return false
     }
 
