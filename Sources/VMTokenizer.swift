@@ -106,7 +106,6 @@ struct VMInstruction: Hashable {
 }
 
 class VMTokenizer {
-    let staticPrefix: String
     var comparisonLabelIndex = 0
 
     private var arithmeticLabels: Set<ArithmeticCommand> = Set()
@@ -118,7 +117,7 @@ class VMTokenizer {
 
     private var stackPushLabelGenerated = false
     private var hasWrittenBoolLabel = false
-
+    private var staticPrefix: String
     private var functionReturnIndex: [String: Int] = [:]
 
     private let STORED_FRAME_LABELS = [
@@ -132,21 +131,60 @@ class VMTokenizer {
         self.staticPrefix = staticPrefix
     }
 
-    func bootstrapVMTranslator() -> [String] {
-        let segments = [
-            "SP": "256",
-            "LCL": "256",
-            "ARG": "300",
-            "THIS": "3000",
-            "THAT": "4000",
+    func setStaticPrefix(prefix: String) {
+        staticPrefix = prefix
+    }
+
+    func bootstrapVMTranslator(
+        callInit: Bool = false,
+        stackPointerBase: String
+    ) -> [String] {
+        
+        var initCall = writeCall(calleeName: "Sys.init", calleeArgs: 0)
+        var segmentPointers = [
+            "@SP",
+            "@LCL",
+            "@ARG",
+            "@THIS",
+            "@THAT",
+            "@R5",
+            "@R6",
+            "@R7",
+            "@R8",
+            "@R9",
+            "@R10",
+            "@R11",
+            "@R12",
+            "@R13",
+            "@R14",
+            "@R15",
         ]
 
-        return segments.flatMap { segmentName, initialPointerVal in
-            [
-                "@\(segmentName)",
-                "M=\(initialPointerVal)",
-            ]
+        let segments: [(String, String)] = [
+            ("SP", stackPointerBase), // Change this if testing NestedCalls or lower
+            ("LCL", stackPointerBase),
+            ("ARG", stackPointerBase),
+            ("THIS", "3000"),
+            ("THAT", "4000"),
+        ]
+
+        var result: [String] = []
+        for i in 0 ... segments.count - 1 {
+            result.append(contentsOf: [
+                "@\(segments[i].1)",
+                "D=A",
+                "@\(segments[i].0)",
+                "M=D",
+            ])
+//            print("wrote \(segments[i].0)")
         }
+
+        if callInit {
+            result.append(contentsOf: initCall)
+        }
+
+        segmentPointers.append(contentsOf: result)
+        return segmentPointers
     }
 
     private func writeCall(
@@ -160,44 +198,65 @@ class VMTokenizer {
 
         functionReturnIndex.updateValue(returnIndex, forKey: calleeName)
 
-        let returnSymbol = "\(staticPrefix).\(calleeName)$ret.\(returnIndex)"
-
-        // TODO: Capitalize staticPrefix at a higher level
-        let calleeNamePrefixed = "\(staticPrefix.capitalized).\(calleeName)"
+        let returnSymbol = "\(calleeName)$ret.\(returnIndex)"
+        let calleeNamePrefixed = "\(calleeName)"
+        var matchArgToLCLMinusFiveMinusArgs = [
+            "@\(5 + calleeArgs)",
+            "D=A",
+            "@SP",
+            "D=M-D",
+            "D=D-A",
+            "@ARG // Reposition ARG in preparation for calling the function",
+            "M=D",
+        ]
         var storeFrameInstructions = storeFrame(nArgs: calleeArgs)
-        storeFrameInstructions.append(
-            contentsOf: [
-                "@\(returnSymbol)",
-                "D=A",
-                "@SP",
-                "A=M",
-                "M=D",
-                "@SP",
-                "M=M+1",
+
+        var returnAddr: [String] = [
+            "@\(returnSymbol)",
+            "D=A",
+            "@SP",
+            "A=M",
+            "M=D",
+            "@SP",
+            "M=M+1",
+        ]
+        
+        returnAddr.append(contentsOf: storeFrameInstructions)
+        returnAddr.append(contentsOf: matchArgToLCLMinusFiveMinusArgs)
+        returnAddr.append(contentsOf:
+            [
                 "@\(calleeNamePrefixed)",
                 "0;JMP",
                 "(\(returnSymbol))",
             ]
         )
-        return storeFrameInstructions
+
+        return returnAddr
     }
 
     private func storeFrame(nArgs: Int) -> [String] {
-        return STORED_FRAME_LABELS.flatMap {
+        var result: [String] = STORED_FRAME_LABELS.flatMap {
             [
-                "@\($0) // Storing Frame", // Select the segment pointer (LCL, ARG, THIS, THAT)
+                "@\($0) // Storing frame part \($0)", // Start storing frame - select the segment pointer (LCL, ARG, THIS, THAT)
                 "D=M", // Store the selected pointer in D
                 "@SP", // Select the stack pointer
                 "A=M", // Navigate to the stack pointer's address
                 "M=D", // Push the selected segment pointer onto the stack
                 "@SP",  // Reselect the stack pointer
-                "MD=M+1", // Increment the stack pointer
-                "@\(nArgs)", // Reposition ARG in preparation for calling the function
-                "D=D-A",
-                "@ARG",
-                "M=D // End Storing Frame",
+                "MD=M+1 // End Storing Frame part \($0)", // Increment the stack pointer
             ]
         }
+
+//        result.insert(
+//            contentsOf: [
+//                "@\(nArgs) // Reposition ARG in preparation for calling the function",
+//                "D=D-A",
+//                "@ARG",
+//                "M=D"
+//            ],
+//            at: result.endIndex
+//        )
+        return result
     }
 
     private func writeFunctionDef(
@@ -205,14 +264,18 @@ class VMTokenizer {
         locals: Int
     ) -> [String] {
         var result = [
-            "// Start Function \(symbolName) \n",
-            "(\(symbolName))",
+            "(\(symbolName)) // Start Function \(symbolName)",
+            "@SP",
+            "D=M",
+            "@LCL // Init LCL by copying SP",
+            "M=D",
         ]
+
         if locals > 0 {
-            for i in 0 ... locals {
+            for i in 0 ... locals - 1 {
                 result.append(
                     contentsOf: [
-                        "@\(i - 1) // Init local \(i)",
+                        "@\(i) // Init local \(i)",
                         "D=A",
                         "@LCL",
                         "A=M+D",
@@ -222,19 +285,36 @@ class VMTokenizer {
             }
         }
 
-        result.append(contentsOf: [
-            "D=A+1", // Should be one past the last local initialized
-            "@SP",
-            "M=D",
-            "// End Function \(symbolName)\n",
-        ])
+        result.append(
+            contentsOf: [
+                "@\(locals)",
+                "D=A",
+                "@LCL",
+                "D=M+D", // Should be one past the last local initialized or @LCL
+                "@SP",
+//                "A=M",
+                "M=D // End Function \(symbolName)",
+            ]
+        )
         return result
     }
 
     private func restoreFrame() -> [String] {
         /* Happens during the return process, and is part of the final stage of a function's executution */
         var result: [String] = [
-            "@SP",
+            "@5 // Start return block - save the return addr for jump before swap",
+            "D=A",
+            "@LCL",
+            "AD=M-D", // Return Addr should be stored at LCL - 5
+            "D=M",
+            "@R13",
+            "M=D",
+
+            "@ARG", // Store the current arg 0 address, because this will be the new SP
+            "D=M",
+            "@R15",
+            "M=D", // R15 will contain the address of the new SP after unwinding the stored frame
+            "@SP // Start return block",
             "A=M-1",
             "D=M",
             "@ARG",
@@ -244,10 +324,6 @@ class VMTokenizer {
             "D=M", // The last pointer in the frame will be stored 1 prior in the global stack to the LCL pointer of the callee
             "@R14", // Select a general purpose register that will act as a temporary location for the LCL location in RAM
             "M=D", // Store the location of the LCL segment
-            "@ARG",
-            "D=M",
-            "@SP",
-            "M=D+1",
         ]
 
         /* Unwind the caller's stack frame */
@@ -256,7 +332,7 @@ class VMTokenizer {
                 [
                     "@R14",
                     "AM=M-1", // Start decrementing from the last LCL that was stored in R14
-                    "D=M", // Retrive the frame element at this position
+                    "D=M", // Retrieve the frame element at this position
                     "@\($0)",
                     "M=D",
                 ]
@@ -265,9 +341,13 @@ class VMTokenizer {
 
         result.append(
             contentsOf: [
-                "@R14",
-                "AM=M-1",
-                "0;JMP",
+                "@R15",
+                "D=M", // This becomes the stack pointer
+                "@SP",
+                "M=D+1", // Restore the stack pointer
+                "@R13",
+                "A=M",
+                "0;JMP // End Return Block", // Jump to the return address
             ]
         )
 
@@ -313,7 +393,7 @@ class VMTokenizer {
                 dest: d,
                 index: index
             )
-            
+
             // Store the calculated dest in another register
             segmentOffsetInstructions.append(
                 contentsOf: [
@@ -327,6 +407,7 @@ class VMTokenizer {
                     "M=D", // Store the previous stack value in the final destination
                 ]
             )
+            result.append(contentsOf: segmentOffsetInstructions)
         }
 
         return result
@@ -465,7 +546,7 @@ class VMTokenizer {
         index: Int
     ) -> [String] {
         var results: [String] = [
-            getSegmentString(dest: dest, constIndex: index)
+            getSegmentString(dest: dest, constIndex: index),
         ]
         if dest == .TEMP ||
             dest == .POINTER ||
@@ -593,6 +674,7 @@ class VMTokenizer {
 
     func translate(from vmInstruction: VMInstruction) -> [String] {
         var translatedInstructionList: [String] = []
+
         if let pushOrPop = vmInstruction.stackCommand {
             switch pushOrPop {
                 case .pop:

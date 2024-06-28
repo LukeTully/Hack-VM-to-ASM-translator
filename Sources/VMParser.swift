@@ -45,7 +45,7 @@ class VMParser {
 
     func parse(instruction: String) -> VMInstruction? {
         if !shouldSkip(instruction: instruction.trimmingCharacters(in: .whitespacesAndNewlines)) {
-            let split: [String] = instruction.components(separatedBy: " ")
+            let split: [String] = instruction.components(separatedBy: .whitespaces)
 
             if !split.isEmpty {
                 let baseCommand: String = split[0].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -97,6 +97,7 @@ class VMParser {
     private func shouldSkip(instruction: String) -> Bool {
         /* Determine if the line should be skipped */
         if instruction.hasPrefix("//") {
+            print("Skipped line \(instruction)")
             return true
         }
         return false
